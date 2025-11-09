@@ -120,7 +120,7 @@ def compress_and_generate_frames(bitmap, job_id, final_magic, image_name):
         frame.append(0x66)  # Magic
         
         # Calculate length
-        length = 16 + len(chunk) + 4
+        length = 16 + len(chunk) + 1
         frame.extend([length & 0xFF, (length >> 8) & 0xFF])
         
         # Printer ID
@@ -138,9 +138,6 @@ def compress_and_generate_frames(bitmap, job_id, final_magic, image_name):
         
         # Payload
         frame.extend(chunk)
-        
-        # End marker
-        frame.extend([0x11, 0x00, 0x00])
         
         # Calculate checksum
         temp_frame = frame + b'\x00'
@@ -180,7 +177,7 @@ def generate_esp32_code(frames, test_name):
 def debug_frame_details(frames):
     print(f"\n=== Frame Details ===")
     for i, frame in enumerate(frames):
-        payload = frame[16:-4]  # Extract payload
+        payload = frame[16:-1]
         print(f"Frame {i+1}:")
         print(f"  Total: {len(frame)} bytes")
         print(f"  Payload: {len(payload)} bytes")
