@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
+"""
+MakeID L1 Printer - CORRECT Protocol Implementation
+Split FIRST, then compress each chunk independently
+"""
+
 import numpy as np
 import minilzo
+import math
 
 # === PRINTER SETTINGS ===
 PRINTER_ID = bytes([0x1B, 0x2F, 0x03, 0x01, 0x00, 0x01, 0x00, 0x01])
+IMAGE_WIDTH = 384
+IMAGE_HEIGHT = 96
 
 def calculate_checksum(frame_bytes):
+    """Calculate frame checksum (sum subtraction)"""
     checksum = 0
     for byte in frame_bytes[:-1]:
         checksum = (checksum - byte) & 0xFF
     return checksum
 
 def create_test_bitmap(width, height, pattern="border"):
-    """Create test bitmap with border pattern"""
+    """Create test bitmap"""
     bitmap = np.zeros((height, width), dtype=np.uint8)
+    
     if pattern == "border":
-        border_size = min(5, height // 10, width // 10)
+        border_size = 5
         bitmap[0:border_size, :] = 255
         bitmap[-border_size:, :] = 255
         bitmap[:, 0:border_size] = 255
@@ -24,204 +34,285 @@ def create_test_bitmap(width, height, pattern="border"):
         bitmap[:] = 255
     elif pattern == "all_black":
         bitmap[:] = 0
-    elif pattern == "checker":
-        bitmap[:, ::2] = 255
-        bitmap[::2, :] ^= 255
+    elif pattern == "diagonal":
+        for i in range(min(width, height)):
+            bitmap[i, i] = 255
+            if i < width:
+                bitmap[i, width - 1 - i] = 255
+    
     return bitmap
 
-def bitmap_to_bytes_optimized(bitmap):
-    """Convert bitmap to 1bpp byte array"""
+def bitmap_to_bytes(bitmap):
+    """Convert numpy bitmap to byte array (row-major, 1 bit per pixel)"""
     height, width = bitmap.shape
-    bytes_per_row = (width + 7) // 8
-    out = bytearray()
+    flat = bitmap.flatten()
     
-    for y in range(height):
-        for x in range(0, width, 8):
-            byte_val = 0
-            for bit in range(8):
-                if x + bit < width and bitmap[y, x + bit] > 0:
-                    byte_val |= (1 << (7 - bit))
-            out.append(byte_val)
+    # Pack 8 pixels per byte (MSB first)
+    bytes_array = bytearray()
+    for i in range(0, len(flat), 8):
+        byte = 0
+        for bit in range(8):
+            if i + bit < len(flat) and flat[i + bit] > 0:
+                byte |= (0x80 >> bit)
+        bytes_array.append(byte)
     
-    return bytes(out)
+    return bytes(bytes_array)
 
-def transform_to_printer_format_optimized(bitmap_bytes, width, height):
+def transform_to_printer_format(bitmap_bytes, width, height):
     """
-    Transform bitmap to printer format
+    Transform bitmap to printer format:
+    1. Row-major → Column-major (bottom-to-top)
+    2. 16-bit word swap
+    3. Bit inversion
     """
-    bytes_per_row = (width + 7) // 8
-    total_bytes = height * bytes_per_row
+    BYTES_PER_COLUMN = height // 8  # 12 bytes for 96 pixels
+    total_bytes = (width * height) // 8
     
-    # Simple inversion (common in thermal printers)
-    result = bytearray()
-    for byte in bitmap_bytes:
-        result.append(byte ^ 0xFF)  # Invert bits
+    # Step 1: Convert to column-major (bottom-to-top)
+    result = bytearray(total_bytes)
     
-    # Add the common header
-    final_output = bytearray()
-    final_output.extend(b'\x00\x02')  # Common header
-    final_output.extend(result)
+    for x in range(width):
+        for y in range(height):
+            # Read pixel from row-major bitmap
+            row_idx = y * width + x
+            byte_idx = row_idx // 8
+            bit_pos = row_idx % 8
+            pixel = (bitmap_bytes[byte_idx] >> (7 - bit_pos)) & 1
+            
+            # Write to column-major (bottom-to-top)
+            col_idx = x * BYTES_PER_COLUMN + (height - 1 - y) // 8
+            bit_pos_out = (height - 1 - y) % 8
+            
+            if pixel:
+                result[col_idx] |= (1 << bit_pos_out)
     
-    return bytes(final_output)
+    # Step 2: 16-bit word swap
+    for i in range(0, total_bytes, 2):
+        if i + 1 < total_bytes:
+            result[i], result[i + 1] = result[i + 1], result[i]
+    
+    # Step 3: Invert all bits (0xFF = black for thermal printer)
+    for i in range(total_bytes):
+        result[i] ^= 0xFF
+    
+    return bytes(result)
 
-def compress_and_generate_frames(bitmap, job_id, final_magic, image_name):
-    """Compress bitmap and generate frames"""
+def compress_and_generate_frames(bitmap, image_name):
     height, width = bitmap.shape
-    print(f"\n=== Generating {image_name} ({width}x{height}) ===")
+    print(f"\n{'='*70}")
+    print(f"Generating frames for: {image_name} ({width}x{height})")
+    print(f"{'='*70}")
     
-    # Convert to bytes
-    bitmap_bytes = bitmap_to_bytes_optimized(bitmap)
-    print(f"Original bitmap: {len(bitmap_bytes)} bytes")
+    # Step 1: Convert bitmap to bytes
+    bitmap_bytes = bitmap_to_bytes(bitmap)
+    print(f"1. Bitmap → Bytes: {len(bitmap_bytes)} bytes")
     
-    # Transform to printer format
-    printer_format = transform_to_printer_format_optimized(bitmap_bytes, width, height)
-    print(f"Transformed format: {len(printer_format)} bytes")
+    # Step 2: Transform to printer format (column-major, bottom-to-top)
+    printer_format = transform_to_printer_format(bitmap_bytes, width, height)
+    print(f"2. Transformed to printer format: {len(printer_format)} bytes")
     
-    # Compress using LZO
-    try:
-        compressed_data = minilzo.compress(printer_format)
-        print(f"Compressed: {len(compressed_data)} bytes")
-    except Exception as e:
-        print(f"Compression failed: {e}")
-        return None
+    # Step 3: Calculate width split (in pixels/columns)
+    BYTES_PER_COLUMN = height // 8  # 96 pixels = 12 bytes per column
     
-    # Split into 4 chunks
-    TARGET_FRAMES = 4
-    chunks = []
+    default_width = 85  # maximum width of each chunk
+    remaining_width = width % 85
+    number_of_chunks = math.ceil(width / 85)
     
-    if len(compressed_data) <= TARGET_FRAMES:
-        base_size = max(1, len(compressed_data) // TARGET_FRAMES)
-        for i in range(TARGET_FRAMES):
-            start = i * base_size
-            end = start + base_size if i < TARGET_FRAMES - 1 else len(compressed_data)
-            if start < len(compressed_data):
-                chunks.append(compressed_data[start:end])
-            else:
-                chunks.append(b'')
-    else:
-        base_size = len(compressed_data) // TARGET_FRAMES
-        for i in range(TARGET_FRAMES):
-            start = i * base_size
-            if i < TARGET_FRAMES - 1:
-                end = start + base_size
-            else:
-                end = len(compressed_data)
-            chunks.append(compressed_data[start:end])
+    print(f"3. Splitting {width} columns into {number_of_chunks} chunks:")
+    print(f"   Base width per chunk: {default_width} columns ({default_width * BYTES_PER_COLUMN} bytes)")
     
-    print(f"Split into {len(chunks)} chunks: {[len(c) for c in chunks]}")
-    
-    # Create frames
+    # Step 4: Split bitmap by width (columns), then compress each chunk
     frames = []
-    for i, chunk in enumerate(chunks):
-        is_final = (i == TARGET_FRAMES - 1)
-        frames_remaining = TARGET_FRAMES - i - 1
+    column_offset = 0
+    total_compressed = 0
+    
+    print(f"\n4. Processing chunks (splitting by width):")
+
+    frames_remaining = number_of_chunks
+    
+    for chunk_idx in range(number_of_chunks):
+        frames_remaining -= 1
+
+        # Calculate width for this chunk (distribute remainder evenly)
+        chunk_width = default_width
         
-        frame = bytearray()
-        frame.append(0x66)  # Magic
+        # Calculate byte range for this chunk
+        # In column-major format: each column is BYTES_PER_COLUMN bytes
+        byte_offset = column_offset * BYTES_PER_COLUMN
+        chunk_bytes = chunk_width * BYTES_PER_COLUMN
         
-        # Calculate length
-        length = 16 + len(chunk) + 1
-        frame.extend([length & 0xFF, (length >> 8) & 0xFF])
+        # Extract THIS chunk (vertical slice of columns)
+        chunk_data = printer_format[byte_offset:byte_offset + chunk_bytes]
         
-        # Printer ID
-        frame.extend(PRINTER_ID)
+        # Compress THIS chunk independently
+        try:
+            compressed_chunk = minilzo.compress(chunk_data)
+        except Exception as e:
+            print(f"   Chunk {chunk_idx + 1} compression failed: {e}")
+            return None
         
-        # Job ID (little-endian)
-        frame.extend([job_id & 0xFF, (job_id >> 8) & 0xFF])
+        total_compressed += len(compressed_chunk)
         
-        # Frame magic
-        frame_magic = final_magic if is_final else 0x55
-        frame.append(frame_magic)
+        frame_width = default_width if frames_remaining else remaining_width
         
-        # Remaining frames (big-endian)
-        frame.extend([(frames_remaining >> 8) & 0xFF, frames_remaining & 0xFF])
+        # Create BLE frame
+        frame = create_ble_frame(
+            compressed_chunk, 
+            frames_remaining,
+            frame_width
+        )
         
-        # Payload
-        frame.extend(chunk)
+        frames.append(frame)
         
-        # Calculate checksum
-        temp_frame = frame + b'\x00'
-        checksum = calculate_checksum(temp_frame)
-        frame.append(checksum)
+        print(f"   Chunk {chunk_idx + 1}/{number_of_chunks}: "
+              f"width={chunk_width} cols, "
+              f"uncompressed={chunk_bytes}B → compressed={len(compressed_chunk)}B "
+              f"({len(compressed_chunk)*100/chunk_bytes:.1f}%), "
+              f"frame_total={len(frame)}B, "
+              f"remaining={frames_remaining}")
         
-        frames.append(bytes(frame))
-        print(f"Frame {i+1}: {len(chunk)}B payload, {len(frame)}B total")
+        column_offset += chunk_width
+    
+    print(f"\n5. Summary:")
+    print(f"   Total chunks: {number_of_chunks}")
+    print(f"   Total columns processed: {column_offset}/{width}")
+    print(f"   Total uncompressed: {len(printer_format)}B")
+    print(f"   Total compressed: {total_compressed}B ({total_compressed*100/len(printer_format):.1f}%)")
     
     return frames
 
+def create_ble_frame(compressed_chunk, frames_remaining, chunk_width):
+    frame = bytearray()
+    
+    # Header starts with Magic number 0x66
+
+    frame.append(0x66)
+    length = 17 + len(compressed_chunk) + 1
+    frame.append(length & 0xFF)
+    frame.append((length >> 8) & 0xFF)
+    frame.extend(PRINTER_ID)
+    frame.append(IMAGE_WIDTH & 0xFF)
+    frame.append((IMAGE_WIDTH >> 8) & 0xFF)
+    frame.append(chunk_width)
+    frame.append((frames_remaining >> 8) & 0xFF)
+    frame.append(frames_remaining & 0xFF)
+
+    # End of Header
+    frame.append(0x00)
+    
+    frame.extend(compressed_chunk)
+    
+    # Checksum (last byte)
+    checksum = calculate_checksum(frame + b'\x00')
+    frame.append(checksum)
+    
+    return bytes(frame)
+
+def generate_python_frames_output(frames, test_name):
+    """Generate Python code with frames"""
+    print(f"\n{'='*70}")
+    print(f"Python code for: {test_name}")
+    print(f"{'='*70}")
+    print("all_frames = [")
+    
+    for i, frame in enumerate(frames):
+        hex_string = ' '.join(f"{b:02X}" for b in frame)
+        if i < len(frames) - 1:
+            print(f'    "{hex_string}",')
+        else:
+            print(f'    "{hex_string}"')
+    
+    print("]")
+
 def generate_esp32_code(frames, test_name):
-    print(f"\n// ===========================================")
-    print(f"// {test_name} - Generated with current algorithm")
-    print(f"// ===========================================")
-    print("std::vector<std::vector<uint8_t>> printFrames;")
+    """Generate ESP32 C++ code"""
+    print(f"\n{'='*70}")
+    print(f"ESP32 code for: {test_name}")
+    print(f"{'='*70}")
     
     for i, frame in enumerate(frames):
         print(f"\n// Frame {i+1} - {len(frame)} bytes")
         print("printFrames.push_back({")
         
-        # Format with proper indentation (16 bytes per line)
-        hex_lines = []
         for j in range(0, len(frame), 16):
             line = frame[j:j+16]
             hex_str = ', '.join(f"0x{b:02X}" for b in line)
             if j + 16 >= len(frame):
-                hex_lines.append(f"    {hex_str}")
+                print(f"    {hex_str}")
             else:
-                hex_lines.append(f"    {hex_str},")
+                print(f"    {hex_str},")
         
-        print('\n'.join(hex_lines))
         print("});")
-    
-    print(f"\n// Total: {len(frames)} frames")
 
-def debug_frame_details(frames):
-    print(f"\n=== Frame Details ===")
+def verify_roundtrip(frames, expected_width):
+    print(f"\n{'='*70}")
+    print("Verifying roundtrip (decompress frames)")
+    print(f"{'='*70}")
+    
+    decompressed_data = bytearray()
+    BYTES_PER_COLUMN = IMAGE_HEIGHT // 8
+    
     for i, frame in enumerate(frames):
-        payload = frame[16:-1]
-        print(f"Frame {i+1}:")
-        print(f"  Total: {len(frame)} bytes")
-        print(f"  Payload: {len(payload)} bytes")
-        print(f"  Payload hex: {payload.hex()}")
-        print(f"  Checksum: 0x{frame[-1]:02X}")
-
-def generate_frames_string_format(frames, test_name):
-    print(f"all_frames = [")
+        compressed_chunk = frame[17:-1]
+        
+        try:
+            dst_len = 9999 # weird API, max decompressed length has to be known beforehand or we fail.
+            decompressed = minilzo.decompress(compressed_chunk, dst_len)
+            decompressed_data.extend(decompressed)
+            
+            columns = len(decompressed) // BYTES_PER_COLUMN
+            print(f"   Frame {i+1}: {len(compressed_chunk)}B → {len(decompressed)}B "
+                  f"({columns} columns)")
+        except Exception as e:
+            print(f"   Frame {i+1}: Decompression failed - {e}")
+            return False
     
-    frame_strings = []
-    for i, frame in enumerate(frames):
-        # Convert frame to space-separated hex string
-        hex_string = ' '.join(f"{b:02X}" for b in frame)
-        frame_strings.append(f'    "{hex_string}"')
+    expected_size = (expected_width * IMAGE_HEIGHT) // 8
     
-    # Join with newlines and commas
-    print(',\n'.join(frame_strings))
-    print("]")
+    if len(decompressed_data) == expected_size:
+        print(f"\nSUCCESS! Decompressed {len(decompressed_data)} bytes "
+              f"(expected {expected_size})")
+        return True
+    else:
+        print(f"\nFAILED! Decompressed {len(decompressed_data)} bytes "
+              f"(expected {expected_size})")
+        return False
 
-# Test configurations
-test_configs = [
-    (384, 96, "border", 0x012B, 0x2C, "Border_384x96"),
-    # (384, 96, "all_white", 0x012B, 0x2C, "White_384x96"), 
-    # (384, 96, "all_black", 0x012B, 0x2C, "Black_384x96"),
-    # (384, 96, "checker", 0x012B, 0x2C, "Checker_384x96"),
-]
+# ============================================================================
+# MAIN
+# ============================================================================
 
 if __name__ == "__main__":
-    print("MakeID L1 Printer - ESP32 Code Generator")
-    print("Using current compression algorithm")
+    print("╔" + "="*68 + "╗")
+    print("║" + "  MakeID L1 Printer - CORRECT Frame Generator".center(68) + "║")
+    print("║" + "  Split FIRST, then compress each chunk".center(68) + "║")
+    print("╚" + "="*68 + "╝")
     
-    for width, height, pattern, job_id, final_magic, name in test_configs:
+    # Test configurations
+    test_configs = [
+        ("border", "Border Pattern"),
+        ("all_white", "All White"),
+        ("all_black", "All Black"),
+        ("diagonal", "Diagonal Lines"),
+    ]
+    
+    for pattern, name in test_configs:
         # Create bitmap
-        bitmap = create_test_bitmap(width, height, pattern)
+        bitmap = create_test_bitmap(IMAGE_WIDTH, IMAGE_HEIGHT, pattern)
         
-        # Generate frames using current algorithm
-        frames = compress_and_generate_frames(bitmap, job_id, final_magic, name)
+        frames = compress_and_generate_frames(bitmap, name)
         
         if frames:
-            # Generate ESP32 code
-            generate_esp32_code(frames, f"{name} (JobID: 0x{job_id:04X})")
-            generate_frames_string_format(frames, f"{name} (JobID: 0x{job_id:04X})")
+            # Verify roundtrip
+            if verify_roundtrip(frames, IMAGE_WIDTH):
+                # Generate code
+                generate_python_frames_output(frames, name)
+                generate_esp32_code(frames, name)
             
-            # Show frame details for debugging
-            debug_frame_details(frames)
-            
-            print(f"\n{'='*60}")
+            print(f"\n{'='*70}\n")
+        else:
+            print(f"Failed to generate frames for {name}\n")
+    
+    print("╔" + "="*68 + "╗")
+    print("║" + "  Generation Complete!".center(68) + "║")
+    print("╚" + "="*68 + "╝")
