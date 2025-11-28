@@ -1,45 +1,60 @@
 #!/usr/bin/env python3
-"""
-MakeID L1 Printer - CORRECT Protocol Implementation
-Split FIRST, then compress each chunk independently
-"""
-
 import numpy as np
 import minilzo
 import math
 
 # === PRINTER SETTINGS ===
-PRINTER_ID = bytes([0x1B, 0x2F, 0x03, 0x01, 0x00, 0x01, 0x00, 0x01])
-IMAGE_WIDTH = 384
+PRINTER_CONSTANT = bytes([0x1B, 0x2F, 0x03, 0x01, 0x00, 0x01, 0x00, 0x01])
+IMAGE_WIDTH = 291
 IMAGE_HEIGHT = 96
 
 def calculate_checksum(frame_bytes):
-    """Calculate frame checksum (sum subtraction)"""
     checksum = 0
     for byte in frame_bytes[:-1]:
         checksum = (checksum - byte) & 0xFF
     return checksum
 
 def create_test_bitmap(width, height, pattern="border"):
-    """Create test bitmap"""
-    bitmap = np.zeros((height, width), dtype=np.uint8)
-    
+    bitmap = np.ones((height, width), dtype=np.uint8)  # Start all white (1)
+
     if pattern == "border":
         border_size = 5
-        bitmap[0:border_size, :] = 255
-        bitmap[-border_size:, :] = 255
-        bitmap[:, 0:border_size] = 255
-        bitmap[:, -border_size:] = 255
+        # Set border pixels to black (0) - this will become white after inversion
+        bitmap[0:border_size, :] = 0                    # Top border
+        bitmap[-border_size:, :] = 0                    # Bottom border  
+        bitmap[:, 0:border_size] = 0                    # Left border
+        bitmap[:, -border_size:] = 0                    # Right border
+
     elif pattern == "all_white":
-        bitmap[:] = 255
+        bitmap[:] = 1  # All white (1)
     elif pattern == "all_black":
-        bitmap[:] = 0
+        bitmap[:] = 0  # All black (0)
     elif pattern == "diagonal":
+        # Draw white diagonals on black background (will invert to black on white)
         for i in range(min(width, height)):
-            bitmap[i, i] = 255
-            if i < width:
-                bitmap[i, width - 1 - i] = 255
-    
+            bitmap[i, i] = 0  # Main diagonal 
+            bitmap[i, width - 1 - i] = 0  # Anti-diagonal
+
+    elif pattern == "stripes":
+        # Create vertical stripes
+        stripe_width = 10
+        for x in range(width):
+            if (x // stripe_width) % 2 == 0:
+                bitmap[:, x] = 0  # Black stripes
+
+    elif pattern == "horizontal_stripes":
+        # Create horizontal stripes  
+        stripe_height = 8
+        for y in range(height):
+            if (y // stripe_height) % 2 == 0:
+                bitmap[y, :] = 0  # Black stripes
+
+    elif pattern == "checkerboard":
+        square_size = 10
+        for y in range(height):
+            for x in range(width):
+                if ((x // square_size) + (y // square_size)) % 2 == 0:
+                    bitmap[y, x] = 0  # Black squares
     return bitmap
 
 def bitmap_to_bytes(bitmap):
@@ -190,7 +205,7 @@ def create_ble_frame(compressed_chunk, frames_remaining, chunk_width):
     length = 17 + len(compressed_chunk) + 1
     frame.append(length & 0xFF)
     frame.append((length >> 8) & 0xFF)
-    frame.extend(PRINTER_ID)
+    frame.extend(PRINTER_CONSTANT)
     frame.append(IMAGE_WIDTH & 0xFF)
     frame.append((IMAGE_WIDTH >> 8) & 0xFF)
     frame.append(chunk_width)
@@ -207,6 +222,22 @@ def create_ble_frame(compressed_chunk, frames_remaining, chunk_width):
     frame.append(checksum)
     
     return bytes(frame)
+
+def visualize_bitmap(bitmap, max_width=80, max_height=40):
+    """Simple ASCII visualization of the bitmap"""
+    height, width = bitmap.shape
+    scale_x = width / max_width
+    scale_y = height / max_height
+    
+    print("Bitmap Visualization:")
+    for y in range(0, min(height, max_height), max(1, int(scale_y))):
+        line = ""
+        for x in range(0, min(width, max_width), max(1, int(scale_x))):
+            if bitmap[y, x] > 0:
+                line += "█"  # Black pixel
+            else:
+                line += " "  # White pixel
+        print(line)
 
 def generate_python_frames_output(frames, test_name):
     """Generate Python code with frames"""
@@ -292,8 +323,11 @@ if __name__ == "__main__":
     test_configs = [
         ("border", "Border Pattern"),
         ("all_white", "All White"),
-        ("all_black", "All Black"),
+        ("all_black", "All Black"), 
         ("diagonal", "Diagonal Lines"),
+        ("stripes", "Vertical Stripes"),
+        ("horizontal_stripes", "Horizontal Stripes"),
+        ("checkerboard", "Checkerboard"),
     ]
     
     for pattern, name in test_configs:
@@ -308,6 +342,7 @@ if __name__ == "__main__":
                 # Generate code
                 generate_python_frames_output(frames, name)
                 generate_esp32_code(frames, name)
+                visualize_bitmap(bitmap)
             
             print(f"\n{'='*70}\n")
         else:
