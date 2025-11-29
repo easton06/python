@@ -14,48 +14,153 @@ def calculate_checksum(frame_bytes):
         checksum = (checksum - byte) & 0xFF
     return checksum
 
-def create_test_bitmap(width, height, pattern="border"):
-    bitmap = np.ones((height, width), dtype=np.uint8)  # Start all white (1)
+def create_test_bitmap(width, height, pattern="border", text=None, text_x=10, text_y=10):
+    bitmap = np.zeros((height, width), dtype=np.uint8)  # Start all white (0)
 
     if pattern == "border":
         border_size = 5
-        # Set border pixels to black (0) - this will become white after inversion
-        bitmap[0:border_size, :] = 0                    # Top border
-        bitmap[-border_size:, :] = 0                    # Bottom border  
-        bitmap[:, 0:border_size] = 0                    # Left border
-        bitmap[:, -border_size:] = 0                    # Right border
+        bitmap[0:border_size, :] = 1                    # Top border
+        bitmap[-border_size:, :] = 1                    # Bottom border  
+        bitmap[:, 0:border_size] = 1                    # Left border
+        bitmap[:, -border_size:] = 1                    # Right border
 
     elif pattern == "all_white":
-        bitmap[:] = 1  # All white (1)
+        bitmap[:] = 0  # All white (0)
     elif pattern == "all_black":
-        bitmap[:] = 0  # All black (0)
+        bitmap[:] = 1  # All black (1)
     elif pattern == "diagonal":
-        # Draw white diagonals on black background (will invert to black on white)
         for i in range(min(width, height)):
-            bitmap[i, i] = 0  # Main diagonal 
-            bitmap[i, width - 1 - i] = 0  # Anti-diagonal
+            bitmap[i, i] = 1  # Main diagonal 
+            bitmap[i, width - 1 - i] = 1  # Anti-diagonal
 
     elif pattern == "stripes":
-        # Create vertical stripes
         stripe_width = 10
         for x in range(width):
             if (x // stripe_width) % 2 == 0:
-                bitmap[:, x] = 0  # Black stripes
+                bitmap[:, x] = 1  # Black stripes
 
     elif pattern == "horizontal_stripes":
-        # Create horizontal stripes  
         stripe_height = 8
         for y in range(height):
             if (y // stripe_height) % 2 == 0:
-                bitmap[y, :] = 0  # Black stripes
+                bitmap[y, :] = 1  # Black stripes
 
     elif pattern == "checkerboard":
         square_size = 10
         for y in range(height):
             for x in range(width):
                 if ((x // square_size) + (y // square_size)) % 2 == 0:
-                    bitmap[y, x] = 0  # Black squares
+                    bitmap[y, x] = 1  # Black squares
+    
+    elif pattern == "text" and text:
+        # Create text bitmap once
+        text_bmp = create_text_bitmap(text)
+        text_height, text_width = text_bmp.shape
+        
+        # Repeat text across the entire bitmap with specified spacing
+        for start_y in range(0, height, text_y + text_height):
+            for start_x in range(0, width, text_x + text_width):
+                # Copy text onto the main bitmap at this position
+                for y in range(text_height):
+                    for x in range(text_width):
+                        pixel_y = start_y + y
+                        pixel_x = start_x + x
+                        if (pixel_y < height and pixel_x < width and 
+                            text_bmp[y, x] == 1):
+                            bitmap[pixel_y, pixel_x] = 1  # Set pixel to black for text
+
+    elif pattern == "letter" and text:
+        # Create text bitmap once for the entire string
+        text_bmp = create_text_bitmap(text)
+        text_height, text_width = text_bmp.shape
+        
+        # Repeat the entire text string across the bitmap
+        for start_y in range(0, height, text_y + text_height):
+            for start_x in range(0, width, text_x + text_width):
+                # Copy the entire text string onto the main bitmap at this position
+                for y in range(text_height):
+                    for x in range(text_width):
+                        pixel_y = start_y + y
+                        pixel_x = start_x + x
+                        if (pixel_y < height and pixel_x < width and 
+                            text_bmp[y, x] == 1):
+                            bitmap[pixel_y, pixel_x] = 1  # Set pixel to black for text
+
     return bitmap
+
+def create_letter_bitmap(letter):
+    """Create a bitmap for a single letter"""
+    # Simple 5x7 font for uppercase letters
+    font = {
+        'A': [0x0E, 0x11, 0x1F, 0x11, 0x11],
+        'B': [0x1E, 0x11, 0x1E, 0x11, 0x1E],
+        'C': [0x0E, 0x11, 0x10, 0x11, 0x0E],
+        'D': [0x1E, 0x11, 0x11, 0x11, 0x1E],
+        'E': [0x1F, 0x10, 0x1E, 0x10, 0x1F],
+        'F': [0x1F, 0x10, 0x1E, 0x10, 0x10],
+        'G': [0x0E, 0x11, 0x13, 0x11, 0x0F],
+        'H': [0x11, 0x11, 0x1F, 0x11, 0x11],
+        'I': [0x1F, 0x04, 0x04, 0x04, 0x1F],
+        'J': [0x07, 0x02, 0x02, 0x12, 0x0C],
+        'K': [0x11, 0x12, 0x1C, 0x12, 0x11],
+        'L': [0x10, 0x10, 0x10, 0x10, 0x1F],
+        'M': [0x11, 0x1B, 0x15, 0x11, 0x11],
+        'N': [0x11, 0x19, 0x15, 0x13, 0x11],
+        'O': [0x0E, 0x11, 0x11, 0x11, 0x0E],
+        'P': [0x1E, 0x11, 0x1E, 0x10, 0x10],
+        'Q': [0x0E, 0x11, 0x11, 0x15, 0x0F],
+        'R': [0x1E, 0x11, 0x1E, 0x14, 0x13],
+        'S': [0x0F, 0x10, 0x0E, 0x01, 0x1E],
+        'T': [0x1F, 0x04, 0x04, 0x04, 0x04],
+        'U': [0x11, 0x11, 0x11, 0x11, 0x0E],
+        'V': [0x11, 0x11, 0x11, 0x0A, 0x04],
+        'W': [0x11, 0x11, 0x15, 0x15, 0x0A],
+        'X': [0x11, 0x0A, 0x04, 0x0A, 0x11],
+        'Y': [0x11, 0x0A, 0x04, 0x04, 0x04],
+        'Z': [0x1F, 0x02, 0x04, 0x08, 0x1F],
+    }
+    
+    if letter.upper() not in font:
+        # Return empty 5x7 bitmap for unknown characters
+        return np.zeros((7, 5), dtype=np.uint8)
+    
+    char_data = font[letter.upper()]
+    bitmap = np.zeros((7, 5), dtype=np.uint8)
+    
+    for row in range(5):  # 5 rows of font data
+        for col in range(5):  # 5 columns
+            if char_data[row] & (1 << (4 - col)):
+                bitmap[row + 1, col] = 1  # Offset by 1 row for better centering
+    
+    return bitmap
+
+def create_text_bitmap(text, spacing=1):
+    """Create a bitmap for text string"""
+    letters = []
+    max_height = 7  # 5x7 font + 1 pixel top/bottom padding
+    
+    # Create bitmaps for each letter
+    for char in text:
+        if char == ' ':
+            # Add space (empty column)
+            letters.append(np.zeros((max_height, 3), dtype=np.uint8))
+        else:
+            letters.append(create_letter_bitmap(char))
+    
+    # Calculate total width
+    total_width = sum(letter.shape[1] for letter in letters) + (len(letters) - 1) * spacing
+    
+    # Create final bitmap
+    result = np.zeros((max_height, total_width), dtype=np.uint8)
+    
+    # Composite letters
+    x_offset = 0
+    for letter in letters:
+        height, width = letter.shape
+        result[0:height, x_offset:x_offset + width] = letter
+        x_offset += width + spacing
+    
+    return result
 
 def bitmap_to_bytes(bitmap):
     """Convert numpy bitmap to byte array (row-major, 1 bit per pixel)"""
@@ -78,7 +183,7 @@ def transform_to_printer_format(bitmap_bytes, width, height):
     Transform bitmap to printer format:
     1. Row-major → Column-major (bottom-to-top)
     2. 16-bit word swap
-    3. Bit inversion
+    3. Flip horizontally
     """
     BYTES_PER_COLUMN = height // 8  # 12 bytes for 96 pixels
     total_bytes = (width * height) // 8
@@ -101,16 +206,26 @@ def transform_to_printer_format(bitmap_bytes, width, height):
             if pixel:
                 result[col_idx] |= (1 << bit_pos_out)
     
-    # Step 2: 16-bit word swap
-    for i in range(0, total_bytes, 2):
-        if i + 1 < total_bytes:
-            result[i], result[i + 1] = result[i + 1], result[i]
+    # Step 2: 16-bit word swap WRONG LOGIC
+    # for i in range(0, total_bytes, 2):
+    #     if i + 1 < total_bytes:
+    #         result[i], result[i + 1] = result[i + 1], result[i]
     
-    # Step 3: Invert all bits (0xFF = black for thermal printer)
-    for i in range(total_bytes):
-        result[i] ^= 0xFF
+    # Step 3: Invert all bits (0xFF = black for thermal printer) WRONG logic
+    # for i in range(total_bytes):
+    #     result[i] ^= 0xFF
+
+    # Step 3: Flip Horizontally (since the printer format is drawn from bottom right to top left)
+    flipped_result = bytearray(total_bytes)
+
+    for x in range(width):
+        src_col = x
+        dst_col = width - 1 - x
+        src_start = src_col * BYTES_PER_COLUMN
+        dst_start = dst_col * BYTES_PER_COLUMN
+        flipped_result[dst_start:dst_start + BYTES_PER_COLUMN] = result[src_start:src_start + BYTES_PER_COLUMN]
     
-    return bytes(result)
+    return bytes(flipped_result)
 
 def compress_and_generate_frames(bitmap, image_name):
     height, width = bitmap.shape
@@ -142,12 +257,8 @@ def compress_and_generate_frames(bitmap, image_name):
     total_compressed = 0
     
     print(f"\n4. Processing chunks (splitting by width):")
-
-    frames_remaining = number_of_chunks
     
-    for chunk_idx in range(number_of_chunks):
-        frames_remaining -= 1
-
+    for chunk_idx in range(number_of_chunks-1, -1, -1):
         # Calculate width for this chunk (distribute remainder evenly)
         chunk_width = default_width
         
@@ -168,16 +279,18 @@ def compress_and_generate_frames(bitmap, image_name):
         
         total_compressed += len(compressed_chunk)
         
-        frame_width = default_width if frames_remaining else remaining_width
+        # inversely
+        frame_width = remaining_width if chunk_idx + 1 == number_of_chunks else default_width
+        frames_remaining = number_of_chunks - chunk_idx - 1
         
         # Create BLE frame
         frame = create_ble_frame(
-            compressed_chunk, 
+            compressed_chunk,
             frames_remaining,
             frame_width
         )
         
-        frames.append(frame)
+        frames.insert(0, frame)
         
         print(f"   Chunk {chunk_idx + 1}/{number_of_chunks}: "
               f"width={chunk_width} cols, "
@@ -328,11 +441,19 @@ if __name__ == "__main__":
         ("stripes", "Vertical Stripes"),
         ("horizontal_stripes", "Horizontal Stripes"),
         ("checkerboard", "Checkerboard"),
+        ("text", "Text Hello", "HELLO"),  # New: Text pattern
+        ("letter", "Letters ABC", "ABC123"),  # New: Individual letters
     ]
     
-    for pattern, name in test_configs:
+    for config in test_configs:
+        pattern = config[0]
+        name = config[1]
         # Create bitmap
-        bitmap = create_test_bitmap(IMAGE_WIDTH, IMAGE_HEIGHT, pattern)
+        if pattern in ["text", "letter"] and len(config) > 2:
+            text_param = config[2]
+            bitmap = create_test_bitmap(IMAGE_WIDTH, IMAGE_HEIGHT, pattern, text=text_param, text_x=10, text_y=10)
+        else:
+            bitmap = create_test_bitmap(IMAGE_WIDTH, IMAGE_HEIGHT, pattern)
         
         frames = compress_and_generate_frames(bitmap, name)
         
@@ -347,7 +468,7 @@ if __name__ == "__main__":
             print(f"\n{'='*70}\n")
         else:
             print(f"Failed to generate frames for {name}\n")
-    
+
     print("╔" + "="*68 + "╗")
     print("║" + "  Generation Complete!".center(68) + "║")
     print("╚" + "="*68 + "╝")
